@@ -2,3 +2,5 @@ fastapi
 uvicorn
 numpy
 scikit-learn
+gunicorn
+
