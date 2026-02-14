@@ -1,7 +1,10 @@
 import re
+import os
 import logging
 from typing import Dict
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -13,16 +16,39 @@ from openai import OpenAI
 # Configuration
 # -------------------------
 
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = os.getenv("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")
+
+
+if not OPENAI_API_KEY:
+    raise RuntimeError("Missing OPENAI_API_KEY environment variable")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 app = FastAPI(title="SecureAI Content Filter")
 
-# Rate limiting: 5 requests per minute per IP
+# -------------------------
+# CORS (IMPORTANT for browser testing)
+# -------------------------
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -------------------------
+# Rate Limiting
+# -------------------------
+
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
+
+# -------------------------
+# Logging
+# -------------------------
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("security")
@@ -64,7 +90,13 @@ def detect_link_spam(text: str) -> float:
 
 
 def detect_promotional(text: str) -> float:
-    promo_keywords = ["buy now", "limited offer", "click here", "subscribe", "free money"]
+    promo_keywords = [
+        "buy now",
+        "limited offer",
+        "click here",
+        "subscribe",
+        "free money"
+    ]
     matches = sum(1 for word in promo_keywords if word in text.lower())
     return min(matches * 0.25, 1.0)
 
@@ -74,8 +106,13 @@ def calculate_spam_confidence(text: str) -> float:
     link_spam = detect_link_spam(text)
     promo = detect_promotional(text)
 
-    # Weighted average
-    confidence = min((repetition * 0.4) + (link_spam * 0.3) + (promo * 0.3), 1.0)
+    confidence = min(
+        (repetition * 0.4) +
+        (link_spam * 0.3) +
+        (promo * 0.3),
+        1.0
+    )
+
     return round(confidence, 2)
 
 
@@ -91,22 +128,41 @@ def moderate_content(text: str) -> bool:
         )
         flagged = response.results[0].flagged
         return flagged
-    except Exception:
+    except Exception as e:
         logger.warning("Moderation API failure")
         return False
 
 
 # -------------------------
-# Endpoint
+# Health Check Endpoint
+# -------------------------
+
+@app.get("/")
+async def health():
+    return {"status": "SecureAI running"}
+
+
+# -------------------------
+# Rate Limit Handler
 # -------------------------
 
 @app.exception_handler(RateLimitExceeded)
-def rate_limit_handler(request: Request, exc: RateLimitExceeded):
-    return HTTPException(
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    logger.warning("Rate limit exceeded")
+    return JSONResponse(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        detail="Too many requests. Please try again later."
+        content={
+            "blocked": True,
+            "reason": "Too many requests. Please try again later.",
+            "sanitizedOutput": "",
+            "confidence": 0.0
+        }
     )
 
+
+# -------------------------
+# Validation Endpoint
+# -------------------------
 
 @app.post("/validate", response_model=OutputResponse)
 @limiter.limit("5/minute")
@@ -143,7 +199,7 @@ async def validate_input(request: Request, payload: InputRequest):
             blocked=False,
             reason="Input passed all security checks",
             sanitizedOutput=sanitized,
-            confidence=1 - spam_confidence
+            confidence=round(1 - spam_confidence, 2)
         )
 
     except Exception:
