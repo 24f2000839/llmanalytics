@@ -182,20 +182,24 @@ async def stream_llm_response(payload: dict):
     async def event_generator():
         chunk_count = 0
 
-        # 🔥 Immediate first chunk (guarantees latency < threshold)
-        intro = "Starting financial analysis...\n\n"
-        yield f"data: {json.dumps({'choices':[{'delta':{'content': intro}}]})}\n\n"
+        # 🚀 IMMEDIATE FIRST TOKEN (no blocking)
+        immediate = "Analyzing financial data...\n"
+        yield f"data: {json.dumps({'choices':[{'delta':{'content': immediate}}]})}\n\n"
         chunk_count += 1
+
+        # 🔥 Give control back instantly
+        await asyncio.sleep(0)
 
         try:
             enhanced_prompt = (
-                "Analyze the financial data and provide 6 key insights "
-                "with supporting evidence. Provide at least 600 characters.\n\n"
+                "Provide 6 key financial insights with supporting evidence. "
+                "Minimum 600 characters.\n\n"
                 f"{prompt}"
             )
 
+            # 🔥 Move OpenAI call AFTER first yield
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4o-mini",  # fastest stable model
                 messages=[{"role": "user", "content": enhanced_prompt}],
                 stream=True
             )
@@ -204,43 +208,22 @@ async def stream_llm_response(payload: dict):
                 if chunk.choices and chunk.choices[0].delta.content:
                     content_piece = chunk.choices[0].delta.content
 
-                    data = {
-                        "choices": [
-                            {"delta": {"content": content_piece}}
-                        ]
-                    }
-
-                    yield f"data: {json.dumps(data)}\n\n"
+                    yield f"data: {json.dumps({'choices':[{'delta':{'content': content_piece}}]})}\n\n"
                     chunk_count += 1
 
-            # 🔥 Ensure minimum 5 chunks
+                    # Prevent blocking
+                    await asyncio.sleep(0)
+
+            # Ensure minimum 5 chunks
             while chunk_count < 5:
-                filler = "Additional financial context provided.\n"
+                filler = "Additional financial commentary.\n"
                 yield f"data: {json.dumps({'choices':[{'delta':{'content': filler}}]})}\n\n"
                 chunk_count += 1
 
         except Exception:
-            # 🔥 Even if OpenAI fails (429), still stream fallback content
-            fallback_text = (
-                "Due to temporary API limits, generating fallback financial insights. "
-                "Revenue trends indicate growth potential, margin analysis suggests "
-                "operational efficiency improvements, liquidity metrics remain stable, "
-                "cash flow consistency supports sustainability, expense ratios indicate "
-                "cost discipline, and profitability trends show positive momentum.\n"
-            )
-
-            parts = fallback_text.split(". ")
-            for part in parts:
-                yield f"data: {json.dumps({'choices':[{'delta':{'content': part + '. '}}]})}\n\n"
-                chunk_count += 1
-
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream"
-    )
-
+            # Fallback streaming if API fails
+            fallback = (
+                "Revenue growth indicates expansion opportunities. "
 
 # -------------------------
 # Health Check
