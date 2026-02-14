@@ -101,41 +101,39 @@ def detect_promotional(text: str) -> float:
 
 # 🔥 NEW: Intent-based spam detection
 def detect_spam_intent(text: str) -> float:
-    intent_phrases = [
-        "generate repetitive text",
-        "create spam",
-        "mass message",
-        "bulk content",
-        "spam content",
-        "auto generate promotional",
-        "send repeated messages"
-    ]
-
     lowered = text.lower()
 
-    for phrase in intent_phrases:
-        if phrase in lowered:
-            return 1.0
+    if "generate" in lowered and "repetitive" in lowered:
+        return 1.0
+
+    if "create" in lowered and "spam" in lowered:
+        return 1.0
+
+    if "bulk" in lowered and "content" in lowered:
+        return 1.0
 
     return 0.0
 
 
+
 def calculate_spam_confidence(text: str) -> float:
+    # Hard block for spam intent
+    if detect_spam_intent(text) == 1.0:
+        return 1.0
+
     repetition = detect_repetition(text)
     link_spam = detect_link_spam(text)
     promo = detect_promotional(text)
-    intent = detect_spam_intent(text)
 
-    # Increased intent weight to ensure blocking
     confidence = min(
-        (repetition * 0.3) +
-        (link_spam * 0.2) +
-        (promo * 0.2) +
-        (intent * 0.8),   # 🔥 increased weight
+        (repetition * 0.4) +
+        (link_spam * 0.3) +
+        (promo * 0.3),
         1.0
     )
 
     return round(confidence, 2)
+
 
 
 def moderate_content(text: str) -> bool:
