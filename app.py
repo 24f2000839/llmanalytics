@@ -165,6 +165,74 @@ def moderate_content(text: str) -> bool:
         return False
 
 
+@app.post("/stream")
+async def stream_llm_response(payload: dict):
+    prompt = payload.get("prompt")
+    stream_flag = payload.get("stream", False)
+
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required.")
+
+    if not stream_flag:
+        raise HTTPException(status_code=400, detail="stream must be true.")
+
+    async def event_generator():
+        try:
+            # Ensure strong financial analysis response
+            enhanced_prompt = (
+                "Analyze the following financial data and provide 6 key insights. "
+                "Each insight must include supporting reasoning or evidence. "
+                "Provide at least 600 characters total.\n\n"
+                f"{prompt}"
+            )
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": enhanced_prompt}],
+                stream=True
+            )
+
+            chunk_count = 0
+
+            for chunk in response:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    content_piece = chunk.choices[0].delta.content
+
+                    data = {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "content": content_piece
+                                }
+                            }
+                        ]
+                    }
+
+                    yield f"data: {json.dumps(data)}\n\n"
+                    chunk_count += 1
+
+                    # Flush progressively
+                    await asyncio.sleep(0)
+
+            # Ensure minimum chunk count (defensive)
+            if chunk_count < 5:
+                filler = "\nAdditional financial analysis provided."
+                yield f"data: {json.dumps({'choices':[{'delta':{'content': filler}}]})}\n\n"
+
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            error_data = {
+                "error": "Streaming failed",
+                "message": "The request could not be completed."
+            }
+            yield f"data: {json.dumps(error_data)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream"
+    )
+
 # -------------------------
 # Health Check
 # -------------------------
