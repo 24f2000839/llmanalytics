@@ -13,7 +13,7 @@ from openai import OpenAI
 # Configuration
 # -------------------------
 
-OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"
+OPENAI_API_KEY = "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"
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
