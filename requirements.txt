@@ -1,6 +1,10 @@
-fastapi
-uvicorn
 numpy
 scikit-learn
 gunicorn
+fastapi
+uvicorn
+openai
+slowapi
+python-multipart
+
 
