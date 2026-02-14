@@ -1,231 +1,154 @@
-import time
-import hashlib
-import numpy as np
-from fastapi import FastAPI
+import re
+import logging
+from typing import Dict
+from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel
-from collections import OrderedDict
-from sklearn.metrics.pairwise import cosine_similarity
-from datetime import datetime, timedelta
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from openai import OpenAI
 
-app = FastAPI()
+# -------------------------
+# Configuration
+# -------------------------
 
-# ======================================
-# CONFIG
-# ======================================
-MODEL_COST_PER_1M = 1.00
-AVG_TOKENS_PER_REQUEST = 3000
-TTL_HOURS = 24
-MAX_CACHE_SIZE = 1500
-SIMILARITY_THRESHOLD = 0.95
+OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"
 
-# ======================================
-# ANALYTICS METRICS
-# ======================================
-total_requests = 0
-cache_hits = 0
-cache_misses = 0
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-total_tokens = 0
-cached_tokens = 0
+app = FastAPI(title="SecureAI Content Filter")
 
-# ======================================
-# MODELS
-# ======================================
-class QueryRequest(BaseModel):
-    query: str
-    application: str
+# Rate limiting: 5 requests per minute per IP
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("security")
 
-class QueryResponse(BaseModel):
-    answer: str
-    cached: bool
-    latency: int
-    cacheKey: str
+SPAM_THRESHOLD = 0.7
 
+# -------------------------
+# Models
+# -------------------------
 
-class AnalyticsResponse(BaseModel):
-    hitRate: float
-    totalRequests: int
-    cacheHits: int
-    cacheMisses: int
-    cacheSize: int
-    costSavings: float
-    savingsPercent: float
-    strategies: list
+class InputRequest(BaseModel):
+    userId: str
+    input: str
+    category: str
+
+class OutputResponse(BaseModel):
+    blocked: bool
+    reason: str
+    sanitizedOutput: str
+    confidence: float
 
 
-# ======================================
-# CACHE ENTRY
-# ======================================
-class CacheEntry:
-    def __init__(self, query, answer, embedding):
-        self.query = query
-        self.answer = answer
-        self.embedding = embedding
-        self.timestamp = datetime.utcnow()
+# -------------------------
+# Spam Detection Logic
+# -------------------------
+
+def detect_repetition(text: str) -> float:
+    words = text.lower().split()
+    if not words:
+        return 0.0
+    unique_ratio = len(set(words)) / len(words)
+    repetition_score = 1 - unique_ratio
+    return repetition_score
 
 
-cache = OrderedDict()
-
-# ======================================
-# UTILITIES
-# ======================================
-def get_md5(text):
-    return hashlib.md5(text.encode()).hexdigest()
+def detect_link_spam(text: str) -> float:
+    links = re.findall(r'https?://|www\.', text.lower())
+    return min(len(links) * 0.3, 1.0)
 
 
-def generate_embedding(text):
-    np.random.seed(abs(hash(text)) % (10**6))
-    return np.random.rand(384)
+def detect_promotional(text: str) -> float:
+    promo_keywords = ["buy now", "limited offer", "click here", "subscribe", "free money"]
+    matches = sum(1 for word in promo_keywords if word in text.lower())
+    return min(matches * 0.25, 1.0)
 
 
-def is_expired(entry):
-    return datetime.utcnow() - entry.timestamp > timedelta(hours=TTL_HOURS)
+def calculate_spam_confidence(text: str) -> float:
+    repetition = detect_repetition(text)
+    link_spam = detect_link_spam(text)
+    promo = detect_promotional(text)
+
+    # Weighted average
+    confidence = min((repetition * 0.4) + (link_spam * 0.3) + (promo * 0.3), 1.0)
+    return round(confidence, 2)
 
 
-def evict_if_needed():
-    while len(cache) > MAX_CACHE_SIZE:
-        cache.popitem(last=False)  # LRU eviction
+# -------------------------
+# Moderation Check
+# -------------------------
+
+def moderate_content(text: str) -> bool:
+    try:
+        response = client.moderations.create(
+            model="omni-moderation-latest",
+            input=text
+        )
+        flagged = response.results[0].flagged
+        return flagged
+    except Exception:
+        logger.warning("Moderation API failure")
+        return False
 
 
-def semantic_search(query_embedding):
-    if not cache:
-        return None
+# -------------------------
+# Endpoint
+# -------------------------
 
-    keys = list(cache.keys())
-    embeddings = np.array([cache[k].embedding for k in keys])
-    similarities = cosine_similarity([query_embedding], embeddings)[0]
-
-    best_index = np.argmax(similarities)
-    best_score = similarities[best_index]
-
-    if best_score > SIMILARITY_THRESHOLD:
-        return keys[best_index]
-
-    return None
-
-
-def call_llm(query):
-    time.sleep(1.5)  # simulate API latency
-    return f"Summary of: {query}"
-
-
-# ======================================
-# HEALTH
-# ======================================
-@app.get("/")
-def health():
-    return {"status": "AI caching system running"}
-
-
-# ======================================
-# MAIN QUERY ENDPOINT
-# ======================================
-@app.post("/", response_model=QueryResponse)
-def query_endpoint(request: QueryRequest):
-    global total_requests, cache_hits, cache_misses
-    global total_tokens, cached_tokens
-
-    start_time = time.time()
-    total_requests += 1
-    total_tokens += AVG_TOKENS_PER_REQUEST
-
-    query = request.query
-    md5_key = get_md5(query)
-
-    # -------------------------
-    # 1️⃣ Exact Match
-    # -------------------------
-    if md5_key in cache:
-        entry = cache[md5_key]
-        if not is_expired(entry):
-            cache_hits += 1
-            cached_tokens += AVG_TOKENS_PER_REQUEST
-            cache.move_to_end(md5_key)
-
-            latency = int((time.time() - start_time) * 1000)
-            return QueryResponse(
-                answer=entry.answer,
-                cached=True,
-                latency=latency,
-                cacheKey=md5_key
-            )
-        else:
-            del cache[md5_key]
-
-    # -------------------------
-    # 2️⃣ Semantic Caching
-    # -------------------------
-    query_embedding = generate_embedding(query)
-    semantic_key = semantic_search(query_embedding)
-
-    if semantic_key:
-        entry = cache[semantic_key]
-        if not is_expired(entry):
-            cache_hits += 1
-            cached_tokens += AVG_TOKENS_PER_REQUEST
-            cache.move_to_end(semantic_key)
-
-            latency = int((time.time() - start_time) * 1000)
-            return QueryResponse(
-                answer=entry.answer,
-                cached=True,
-                latency=latency,
-                cacheKey=semantic_key
-            )
-
-    # -------------------------
-    # 3️⃣ Cache Miss
-    # -------------------------
-    cache_misses += 1
-
-    answer = call_llm(query)
-
-    new_entry = CacheEntry(query, answer, query_embedding)
-    cache[md5_key] = new_entry
-    cache.move_to_end(md5_key)
-    evict_if_needed()
-
-    latency = int((time.time() - start_time) * 1000)
-
-    return QueryResponse(
-        answer=answer,
-        cached=False,
-        latency=latency,
-        cacheKey=md5_key
+@app.exception_handler(RateLimitExceeded)
+def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Too many requests. Please try again later."
     )
 
 
-# ======================================
-# ANALYTICS ENDPOINT
-# ======================================
-@app.get("/analytics", response_model=AnalyticsResponse)
-def analytics():
+@app.post("/validate", response_model=OutputResponse)
+@limiter.limit("5/minute")
+async def validate_input(request: Request, payload: InputRequest):
 
-    hit_rate = cache_hits / total_requests if total_requests else 0
+    if not payload.userId or not payload.input:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid input."
+        )
 
-    # Correct cost calculation formula:
-    # savings = (total_tokens - cached_tokens) * model_cost / 1M
+    if payload.category != "Content Filtering":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid category."
+        )
 
-    actual_tokens_used = total_tokens - cached_tokens
-    baseline_cost = (total_tokens * MODEL_COST_PER_1M) / 1_000_000
-    actual_cost = (actual_tokens_used * MODEL_COST_PER_1M) / 1_000_000
-    savings = baseline_cost - actual_cost
+    try:
+        spam_confidence = calculate_spam_confidence(payload.input)
+        moderation_flag = moderate_content(payload.input)
 
-    savings_percent = (savings / baseline_cost * 100) if baseline_cost else 0
+        if spam_confidence > SPAM_THRESHOLD or moderation_flag:
+            logger.warning(f"Blocked content from user {payload.userId}")
+            return OutputResponse(
+                blocked=True,
+                reason="Spam or policy violation detected",
+                sanitizedOutput="",
+                confidence=spam_confidence
+            )
 
-    return AnalyticsResponse(
-        hitRate=round(hit_rate, 2),
-        totalRequests=total_requests,
-        cacheHits=cache_hits,
-        cacheMisses=cache_misses,
-        cacheSize=len(cache),
-        costSavings=round(savings, 2),
-        savingsPercent=round(savings_percent, 2),
-        strategies=[
-            "exact match caching",
-            "semantic caching (embedding similarity)",
-            "LRU eviction policy",
-            "TTL expiration"
-        ]
-    )
+        sanitized = payload.input.strip()
+
+        return OutputResponse(
+            blocked=False,
+            reason="Input passed all security checks",
+            sanitizedOutput=sanitized,
+            confidence=1 - spam_confidence
+        )
+
+    except Exception:
+        logger.error("Internal validation error")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Request could not be processed."
+        )
