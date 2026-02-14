@@ -11,6 +11,8 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from openai import OpenAI
+from fastapi.responses import StreamingResponse
+
 
 # -------------------------
 # Configuration
