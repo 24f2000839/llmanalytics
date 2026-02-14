@@ -1,7 +1,7 @@
+
 import re
 import os
 import logging
-from typing import Dict
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +18,6 @@ from openai import OpenAI
 
 OPENAI_API_KEY = "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"
 
-
 if not OPENAI_API_KEY:
     raise RuntimeError("Missing OPENAI_API_KEY environment variable")
 
@@ -27,7 +26,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 app = FastAPI(title="SecureAI Content Filter")
 
 # -------------------------
-# CORS (IMPORTANT for browser testing)
+# CORS
 # -------------------------
 
 app.add_middleware(
@@ -70,7 +69,6 @@ class OutputResponse(BaseModel):
     sanitizedOutput: str
     confidence: float
 
-
 # -------------------------
 # Spam Detection Logic
 # -------------------------
@@ -80,8 +78,7 @@ def detect_repetition(text: str) -> float:
     if not words:
         return 0.0
     unique_ratio = len(set(words)) / len(words)
-    repetition_score = 1 - unique_ratio
-    return repetition_score
+    return round(1 - unique_ratio, 2)
 
 
 def detect_link_spam(text: str) -> float:
@@ -101,15 +98,39 @@ def detect_promotional(text: str) -> float:
     return min(matches * 0.25, 1.0)
 
 
+# 🔥 NEW: Intent-based spam detection
+def detect_spam_intent(text: str) -> float:
+    intent_phrases = [
+        "generate repetitive text",
+        "create spam",
+        "mass message",
+        "bulk content",
+        "spam content",
+        "auto generate promotional",
+        "send repeated messages"
+    ]
+
+    lowered = text.lower()
+
+    for phrase in intent_phrases:
+        if phrase in lowered:
+            return 1.0
+
+    return 0.0
+
+
 def calculate_spam_confidence(text: str) -> float:
     repetition = detect_repetition(text)
     link_spam = detect_link_spam(text)
     promo = detect_promotional(text)
+    intent = detect_spam_intent(text)
 
+    # Weighted scoring (intent carries higher weight)
     confidence = min(
-        (repetition * 0.4) +
-        (link_spam * 0.3) +
-        (promo * 0.3),
+        (repetition * 0.3) +
+        (link_spam * 0.2) +
+        (promo * 0.2) +
+        (intent * 0.5),
         1.0
     )
 
@@ -126,15 +147,14 @@ def moderate_content(text: str) -> bool:
             model="omni-moderation-latest",
             input=text
         )
-        flagged = response.results[0].flagged
-        return flagged
-    except Exception as e:
+        return response.results[0].flagged
+    except Exception:
         logger.warning("Moderation API failure")
         return False
 
 
 # -------------------------
-# Health Check Endpoint
+# Health Check
 # -------------------------
 
 @app.get("/")
@@ -155,7 +175,7 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
             "blocked": True,
             "reason": "Too many requests. Please try again later.",
             "sanitizedOutput": "",
-            "confidence": 0.0
+            "confidence": 1.0
         }
     )
 
@@ -184,6 +204,7 @@ async def validate_input(request: Request, payload: InputRequest):
         spam_confidence = calculate_spam_confidence(payload.input)
         moderation_flag = moderate_content(payload.input)
 
+        # 🚨 Block if confidence > threshold OR moderation flags
         if spam_confidence > SPAM_THRESHOLD or moderation_flag:
             logger.warning(f"Blocked content from user {payload.userId}")
             return OutputResponse(
@@ -199,7 +220,7 @@ async def validate_input(request: Request, payload: InputRequest):
             blocked=False,
             reason="Input passed all security checks",
             sanitizedOutput=sanitized,
-            confidence=round(1 - spam_confidence, 2)
+            confidence=spam_confidence
         )
 
     except Exception:
