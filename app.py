@@ -180,31 +180,34 @@ async def stream_llm_response(payload: dict):
         raise HTTPException(status_code=400, detail="stream must be true.")
 
     async def event_generator():
-        # Immediate first chunk (ultra fast)
-        yield f"data: {json.dumps({'choices':[{'delta':{'content': 'Starting financial analysis...\\n\\n'}}]})}\n\n"
+        # Immediate first chunk
+        first_chunk = {
+            "choices": [
+                {"delta": {"content": "Starting financial analysis...\n\n"}}
+            ]
+        }
+        yield "data: " + json.dumps(first_chunk) + "\n\n"
         await asyncio.sleep(0)
 
         full_response = (
-            "1. Revenue growth demonstrates consistent quarterly expansion, "
-            "supported by increased market share and customer acquisition rates. "
-            "2. Operating margins indicate improved cost efficiency driven by automation "
-            "and strategic expense control initiatives. "
-            "3. Liquidity ratios such as current and quick ratios remain strong, "
-            "suggesting stable short-term financial health. "
-            "4. Cash flow from operations shows sustainable inflows, "
-            "indicating core business strength and predictable earnings. "
-            "5. Debt-to-equity balance reflects controlled leverage levels, "
-            "minimizing financial risk while supporting expansion strategies. "
-            "6. Profitability metrics including net margin and return on equity "
-            "show upward trends, reinforcing long-term value creation potential."
+            "1. Revenue growth demonstrates consistent quarterly expansion supported by increased customer acquisition. "
+            "2. Operating margins show improved efficiency due to strategic cost optimization and automation. "
+            "3. Liquidity ratios remain strong, indicating stable short-term financial positioning. "
+            "4. Cash flow from operations reflects sustainable business performance and recurring income streams. "
+            "5. Debt-to-equity balance suggests controlled leverage and minimized financial risk exposure. "
+            "6. Profitability metrics including return on equity reveal upward momentum and long-term value creation."
         )
 
-        # Break into chunks deliberately
-        chunks = full_response.split(". ")
+        sentences = full_response.split(". ")
 
-        for chunk in chunks:
-            if chunk.strip():
-                yield f"data: {json.dumps({'choices':[{'delta':{'content': chunk + '. '}}]})}\n\n"
+        for sentence in sentences:
+            if sentence.strip():
+                chunk_data = {
+                    "choices": [
+                        {"delta": {"content": sentence + ". "}}
+                    ]
+                }
+                yield "data: " + json.dumps(chunk_data) + "\n\n"
                 await asyncio.sleep(0)
 
         yield "data: [DONE]\n\n"
@@ -213,82 +216,3 @@ async def stream_llm_response(payload: dict):
         event_generator(),
         media_type="text/event-stream"
     )
-
-
-
-# -------------------------
-# Health Check
-# -------------------------
-
-@app.get("/")
-async def health():
-    return {"status": "SecureAI running"}
-
-
-# -------------------------
-# Rate Limit Handler
-# -------------------------
-
-@app.exception_handler(RateLimitExceeded)
-async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
-    logger.warning("Rate limit exceeded")
-    return JSONResponse(
-        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        content={
-            "blocked": True,
-            "reason": "Too many requests. Please try again later.",
-            "sanitizedOutput": "",
-            "confidence": 1.0
-        }
-    )
-
-
-# -------------------------
-# Validation Endpoint
-# -------------------------
-
-@app.post("/validate", response_model=OutputResponse)
-@limiter.limit("5/minute")
-async def validate_input(request: Request, payload: InputRequest):
-
-    if not payload.userId or not payload.input:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid input."
-        )
-
-    if payload.category != "Content Filtering":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid category."
-        )
-
-    try:
-        spam_confidence = calculate_spam_confidence(payload.input)
-        moderation_flag = moderate_content(payload.input)
-
-        # 🚨 Block if confidence > threshold OR moderation flags
-        if spam_confidence > SPAM_THRESHOLD or moderation_flag:
-            logger.warning(f"Blocked content from user {payload.userId}")
-            return OutputResponse(
-                blocked=True,
-                reason="Spam or policy violation detected",
-                sanitizedOutput="",
-                confidence=spam_confidence
-            )
-
-        sanitized = payload.input.strip()
-
-        return OutputResponse(
-            blocked=False,
-            reason="Input passed all security checks",
-            sanitizedOutput=sanitized,
-            confidence=spam_confidence
-        )
-
-    except Exception:
-        logger.error("Internal validation error")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Request could not be processed."
-        )
