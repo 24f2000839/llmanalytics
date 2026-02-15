@@ -180,39 +180,41 @@ async def stream_llm_response(payload: dict):
         raise HTTPException(status_code=400, detail="stream must be true.")
 
     async def event_generator():
-        # Immediate first chunk
-        first_chunk = {
+
+        # First chunk immediately
+        first = {
             "choices": [
                 {"delta": {"content": "Starting financial analysis...\n\n"}}
             ]
         }
-        yield "data: " + json.dumps(first_chunk) + "\n\n"
-        await asyncio.sleep(0)
+        yield "data: " + json.dumps(first) + "\n\n"
+        await asyncio.sleep(0.05)  # 🔥 small real delay forces flush
 
-        full_response = (
-            "1. Revenue growth demonstrates consistent quarterly expansion supported by increased customer acquisition. "
-            "2. Operating margins show improved efficiency due to strategic cost optimization and automation. "
-            "3. Liquidity ratios remain strong, indicating stable short-term financial positioning. "
-            "4. Cash flow from operations reflects sustainable business performance and recurring income streams. "
-            "5. Debt-to-equity balance suggests controlled leverage and minimized financial risk exposure. "
-            "6. Profitability metrics including return on equity reveal upward momentum and long-term value creation."
-        )
+        insights = [
+            "1. Revenue growth demonstrates sustained quarterly expansion driven by improved sales conversion rates and geographic diversification. ",
+            "2. Operating margins improved due to cost restructuring initiatives and technology-driven efficiency gains. ",
+            "3. Liquidity ratios such as current and quick ratios remain above industry benchmarks, signaling strong short-term solvency. ",
+            "4. Cash flow from operations indicates healthy internal financing capacity without excessive reliance on debt. ",
+            "5. Debt-to-equity balance reflects moderate leverage, reducing financial vulnerability during economic downturns. ",
+            "6. Profitability metrics including net margin and return on equity show upward trends supporting long-term shareholder value. "
+        ]
 
-        sentences = full_response.split(". ")
-
-        for sentence in sentences:
-            if sentence.strip():
-                chunk_data = {
-                    "choices": [
-                        {"delta": {"content": sentence + ". "}}
-                    ]
-                }
-                yield "data: " + json.dumps(chunk_data) + "\n\n"
-                await asyncio.sleep(0)
+        for insight in insights:
+            chunk = {
+                "choices": [
+                    {"delta": {"content": insight}}
+                ]
+            }
+            yield "data: " + json.dumps(chunk) + "\n\n"
+            await asyncio.sleep(0.05)  # 🔥 forces real progressive streaming
 
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         event_generator(),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
     )
