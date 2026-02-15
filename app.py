@@ -13,6 +13,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from openai import OpenAI
 from fastapi.responses import StreamingResponse
 import json
+import asyncio
 
 
 # -------------------------
