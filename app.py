@@ -181,32 +181,35 @@ async def stream_llm_response(payload: dict):
 
     async def event_generator():
 
-        # First chunk immediately
-        first = {
-            "choices": [
-                {"delta": {"content": "Starting financial analysis...\n\n"}}
-            ]
-        }
-        yield "data: " + json.dumps(first) + "\n\n"
-        await asyncio.sleep(0.05)  # 🔥 small real delay forces flush
-
         insights = [
-            "1. Revenue growth demonstrates sustained quarterly expansion driven by improved sales conversion rates and geographic diversification. ",
-            "2. Operating margins improved due to cost restructuring initiatives and technology-driven efficiency gains. ",
-            "3. Liquidity ratios such as current and quick ratios remain above industry benchmarks, signaling strong short-term solvency. ",
-            "4. Cash flow from operations indicates healthy internal financing capacity without excessive reliance on debt. ",
-            "5. Debt-to-equity balance reflects moderate leverage, reducing financial vulnerability during economic downturns. ",
-            "6. Profitability metrics including net margin and return on equity show upward trends supporting long-term shareholder value. "
+            "1. Revenue growth demonstrates sustained quarterly expansion driven by diversified revenue streams and increased customer retention metrics. ",
+            "2. Operating margins show improvement due to cost optimization initiatives and technology-driven efficiency gains across departments. ",
+            "3. Liquidity ratios such as current and quick ratios remain strong, suggesting stable short-term financial health and operational resilience. ",
+            "4. Cash flow from operations indicates sustainable internal funding capacity, minimizing dependency on external borrowing. ",
+            "5. Debt-to-equity structure reflects balanced leverage, reducing exposure to macroeconomic volatility and interest rate risks. ",
+            "6. Profitability metrics including return on equity and net margin reveal upward trends supporting long-term shareholder value creation. "
         ]
 
-        for insight in insights:
+        # Send first chunk immediately
+        first_chunk = {
+            "choices": [
+                {"delta": {"content": insights[0]}}
+            ]
+        }
+
+        yield "data: " + json.dumps(first_chunk) + "\n\n"
+        await asyncio.sleep(0.15)  # 🔥 Real delay forces flush
+
+        # Send remaining chunks progressively
+        for insight in insights[1:]:
             chunk = {
                 "choices": [
                     {"delta": {"content": insight}}
                 ]
             }
+
             yield "data: " + json.dumps(chunk) + "\n\n"
-            await asyncio.sleep(0.05)  # 🔥 forces real progressive streaming
+            await asyncio.sleep(0.15)  # 🔥 Must be >0.1s to avoid buffering
 
         yield "data: [DONE]\n\n"
 
@@ -215,6 +218,7 @@ async def stream_llm_response(payload: dict):
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no"
-        }
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
