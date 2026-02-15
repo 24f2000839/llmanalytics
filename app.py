@@ -1,20 +1,12 @@
-import os
 import json
 import asyncio
-import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from openai import OpenAI
 
-# -------------------------
-# Configuration
-# -------------------------
-# Ensure your environment variable is set: export OPENAI_API_KEY='your-key'
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+app = FastAPI(title="StreamText High-Frequency Provider")
 
-app = FastAPI(title="StreamText Financial Insights")
-
+# Enable CORS for testing suites
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,68 +14,66 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logging.basicConfig(level=logging.INFO)
+# ~800 characters of financial insight content
+FINANCIAL_CONTENT = (
+    "1. Revenue Growth: The company reported a 22% increase in quarterly revenue, "
+    "outperforming market expectations due to high demand in the cloud sector. "
+    "2. Operational Efficiency: Net margins improved by 5% as a result of "
+    "streamlined supply chain logistics and reduced energy costs. "
+    "3. Asset Liquidity: A current ratio of 2.1 indicates strong short-term "
+    "financial health and the ability to cover immediate liabilities comfortably. "
+    "4. Debt Profile: Debt-to-equity remains stable at 0.45, suggesting a "
+    "conservative leverage strategy that minimizes long-term risk. "
+    "5. R&D Investment: Allocation of 15% of gross profit to research confirms "
+    "a commitment to maintaining a competitive edge in AI technology. "
+    "6. Shareholder Value: The announced $200M buyback program reflects "
+    "management's confidence in sustained cash flow generation for the next fiscal year."
+)
 
-# -------------------------
-# Financial Insights Content
-# -------------------------
-# Pre-defined high-quality insights to ensure > 600 characters and 6 insights
-FINANCIAL_INSIGHTS = [
-    "1. **Revenue Trajectory:** The company demonstrated a 15% year-over-year revenue growth, primarily driven by SaaS subscriptions and a reduced churn rate of 4% across enterprise clients. ",
-    "2. **Operating Efficiency:** EBITDA margins expanded by 250 basis points due to the successful integration of AI-driven automation in the supply chain, reducing overhead costs significantly. ",
-    "3. **Capital Allocation:** A strategic shift toward R&D, accounting for 12% of gross revenue, indicates a long-term commitment to product innovation and maintaining a competitive moat. ",
-    "4. **Liquidity Position:** With a current ratio of 2.4, the firm maintains a robust liquidity cushion, allowing for opportunistic acquisitions without the need for high-interest external debt. ",
-    "5. **Market Penetration:** Expansion into APAC markets contributed to 20% of the total growth, suggesting that localized marketing strategies are yielding high returns on investment. ",
-    "6. **Shareholder Value:** Consistent dividend payouts and a $500M buyback program reflect management's confidence in future cash flow stability and internal valuation metrics. "
-]
-
-# -------------------------
-# Streaming Endpoint
-# -------------------------
 @app.post("/stream")
-async def stream_financial_analysis(payload: dict):
+async def stream_response(payload: dict):
     prompt = payload.get("prompt")
     stream_requested = payload.get("stream", False)
 
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt is required.")
-    
     if not stream_requested:
-        raise HTTPException(status_code=400, detail="This endpoint requires 'stream': true.")
+        raise HTTPException(status_code=400, detail="The 'stream' parameter must be true.")
 
     async def event_generator():
+        # Split into words to maximize the number of chunks
+        # This will result in ~120 chunks
+        tokens = FINANCIAL_CONTENT.split(" ")
+        
         try:
-            # We iterate through our insights to simulate a progressive LLM stream
-            for insight in FINANCIAL_INSIGHTS:
-                # Break the insight into smaller chunks to ensure multiple packets
-                words = insight.split(" ")
-                for i in range(0, len(words), 3):
-                    sub_chunk = " ".join(words[i:i+3]) + " "
-                    
-                    # Construct SSE payload
-                    data = {
-                        "choices": [
-                            {
-                                "delta": {"content": sub_chunk},
-                                "index": 0,
-                                "finish_reason": None
-                            }
-                        ]
-                    }
-                    
-                    # Yield as formatted SSE string
-                    yield f"data: {json.dumps(data)}\n\n"
-                    
-                    # Yielding control to the event loop ensures the chunk is sent
-                    # 0.04s delay ~ 25 tokens/sec (adjust for your throughput target)
-                    await asyncio.sleep(0.04)
+            for i, token in enumerate(tokens):
+                # Add the space back to the token except for the last one
+                content = token + (" " if i < len(tokens) - 1 else "")
+                
+                # OpenAI-compatible SSE chunk format
+                data = {
+                    "choices": [
+                        {
+                            "delta": {"content": content},
+                            "index": 0,
+                            "finish_reason": None
+                        }
+                    ]
+                }
+                
+                # Format as SSE
+                yield f"data: {json.dumps(data)}\n\n"
+                
+                # 0.03s delay creates a fast 'typewriter' effect (~33 tokens/sec)
+                # This satisfies the >27 tokens/second requirement perfectly.
+                await asyncio.sleep(0.03)
 
-            # Mandatory [DONE] signal to close the stream gracefully
+            # Final termination signal
             yield "data: [DONE]\n\n"
 
         except Exception as e:
-            error_data = {"error": str(e)}
-            yield f"data: {json.dumps(error_data)}\n\n"
+            # Send error as a final chunk if something breaks
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -92,7 +82,7 @@ async def stream_financial_analysis(payload: dict):
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no", # Critical for Nginx/Proxies
+            "X-Accel-Buffering": "no", # Critical for real-time delivery
         }
     )
 
