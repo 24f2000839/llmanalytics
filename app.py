@@ -20,12 +20,12 @@ import asyncio
 # Configuration
 # -------------------------
 
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = "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"
 
 if not OPENAI_API_KEY:
     raise RuntimeError("Missing OPENAI_API_KEY environment variable")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY,  max_retries=0)
 
 app = FastAPI(title="SecureAI Content Filter")
 
